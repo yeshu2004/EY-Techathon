@@ -1,0 +1,4 @@
+.env
+uploads/
+go.mod
+go.sum
