@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -25,9 +26,21 @@ var (
 	suffPath = "./uploads/"
 )
 
-type ErrorResponse struct {
-	Message string `json:"message"`
-	Code    int    `json:"code"`
+type LoanStage1Response struct {
+	LoanAmount   int     `json:"loan_amount"`
+	Duration     int     `json:"duration_months"`
+	MonthlyEMI   float64 `json:"monthly_emi"`
+	LimitAmount  int     `json:"limit_amount"`
+	Status       string  `json:"status"`
+	Message      string  `json:"message"`
+}
+
+type Stage2Response struct {
+	LoanAmount int     `json:"loan_amount"`
+	MonthlyEMI float64 `json:"monthly_emi"`
+	Salary     int     `json:"salary"`
+	Status     string  `json:"status"`
+	Message    string  `json:"message"`
 }
 
 type Customer struct {
@@ -57,174 +70,70 @@ type Handler struct {
 	db *sql.DB
 }
 
-func main() {
+func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
+	w.Header().Set("Content-Type", "application/json")
 
-	db, err := connectDB()
-	if err != nil {
-		fmt.Printf("error in db: %v\n", err)
-		return
-	}
-	defer db.Close()
-	h := &Handler{
-		db: db,
-	}
-	// http.HandleFunc("/credit-score", h.fetchCreditScore)
-	http.HandleFunc("/loan", h.loanHandler)
-	http.HandleFunc("/upload-salary", uploadSalaryDoc)
-
-	fmt.Printf("server running on port: %v\n", PORT)
-	if err := http.ListenAndServe(PORT, nil); err != nil {
-		fmt.Printf("server start error: %v", err)
-		return
-	}
-}
-
-func connectDB() (*sql.DB, error) {
-	if err := godotenv.Load(".env"); err != nil {
-		return nil, fmt.Errorf("error loading .env file: %v", err)
-	}
-
-	cfg := mysql.NewConfig()
-	cfg.User = os.Getenv("DBUSER")
-	cfg.Passwd = os.Getenv("DBPASS")
-	cfg.Net = "tcp"
-	cfg.Addr = "127.0.0.1:3306"
-	cfg.DBName = "loandb"
-	cfg.ParseTime = true
-
-	db, err := sql.Open("mysql", cfg.FormatDSN())
-	if err != nil {
-		return nil, fmt.Errorf("error opening database: %v", err)
-	}
-
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("error pinging database: %v", err)
-	}
-
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(25)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	fmt.Println("Connected to SQL Database!")
-	return db, nil
-}
-
-// func (h *Handler) fetchCreditScore(w http.ResponseWriter, r *http.Request) {
-// 	// w.Header().Set("Content-Type", "application/json")
-// 	// fetch the id from middleware
-// 	userId := 1
-
-// 	// get the credit score
-// 	var (
-// 		creditScore  int64
-// 		salary       int64
-// 		existingEMIs int64
-// 	)
-// 	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
-// 		http.Error(w, err.Error(), http.StatusBadRequest)
-// 		log.Printf("db credit score scan error: %v\n", err)
-// 		return
-// 	}
-
-// 	// check for threshold score
-// 	if creditScore < minScore {
-// 		http.Error(w, "low credit score", http.StatusBadRequest)
-// 		log.Printf("cannot procede further, low credit score.")
-// 		return
-// 	}
-
-// 	// calculate pre-approved limit
-// 	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
-
-// 	// switch {
-// 	// // instant approval i.e loan < L
-// 	// case int(loan) < int(limitAmount):
-
-// 	// // document req  i.e L < loan ≤ 2L
-// 	// case int(limitAmount) < int(loan) && int(loan) < int(2*limitAmount):
-
-// 	// // reject i.e loan > 2L
-// 	// case int(loan) < int(2*limitAmount):
-
-// 	// default:
-// 	// 	fmt.Println("idk what to print")
-// 	// }
-
-// }
-
-func (h *Handler) fetchLimitAmount() (int, error) {
-	userId := 1
-
-	var (
-		creditScore  int64
-		salary       int64
-		existingEMIs int64
-	)
-	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
-		log.Printf("db credit score scan error: %v\n", err)
-		return -1, err
-	}
-
-	// check for threshold score
-	if creditScore < minScore {
-		log.Printf("cannot procede further, low credit score.")
-		return -1, fmt.Errorf("low credit score") 
-	}
-
-	// calculate pre-approved limit
-	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
-	return  int(limitAmount), nil
-}
-
-func (h *Handler) loanHandler(w http.ResponseWriter, r *http.Request){
 	// parse & fetch loadAmout
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "failed to parse form", http.StatusBadRequest)
-		log.Printf("parse error: %v\n", err)
+		http.Error(w, `{"error":"failed to parse form"}`, http.StatusBadRequest)
 		return
 	}
 	
 	loanAmount := r.FormValue("loan_amount")
 	months := r.FormValue("duration")
 	loan, err := strconv.Atoi(loanAmount)
-	if err != nil {
-		log.Println(err)
+	if err != nil || loan <= 0 {
+		http.Error(w, `{"error":"invalid loan amount"}`, http.StatusBadRequest)
 		return
 	}
 
 	duration, err := strconv.Atoi(months)
-	if err != nil {
-		log.Println(err)
+	if err != nil || duration <= 0 {
+		http.Error(w, `{"error":"invalid duration"}`, http.StatusBadRequest)
 		return
 	}
 
-	monthlyEMI := float64(loan / duration);
+	monthlyEMI := float64(loan) / float64(duration)
 
 	limitAmount, err :=  h.fetchLimitAmount();
-	if err != nil{
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
+
+	resp := LoanStage1Response{
+		LoanAmount:  loan,
+		Duration:    duration,
+		MonthlyEMI:  monthlyEMI,
+		LimitAmount: limitAmount,
+	}
+
 
 	switch {
 	// instant approval i.e loan < L
 	case int(loan) < int(limitAmount):
-
+		resp.Status = "approved"
+		resp.Message = "instant approval granted"
 	// document req  i.e L < loan ≤ 2L
 	case int(limitAmount) < int(loan) && int(loan) < int(2*limitAmount):
-
+		resp.Status = "salary slip needed"
+		resp.Message = "please upload salary slip for further verification"
 	// reject i.e loan > 2L
-	case int(loan) < int(2*limitAmount):
-
+	case int(loan) > int(2*limitAmount):
+		resp.Status = "rejected"
+		resp.Message = "requested loan exceeds maximum eligibility"
 	default:
-		fmt.Println("idk what to print")
+		resp.Status = "unkown"
+		resp.Message = "unable to determine eligibility."
 	}
 
-
+	json.NewEncoder(w).Encode(resp)
 }
 
 // TODO: mine type, only pdf required
-func uploadSalaryDoc(w http.ResponseWriter, r *http.Request) {
+func UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -273,6 +182,73 @@ func uploadSalaryDoc(w http.ResponseWriter, r *http.Request) {
 	ocrFile(w, b)
 	fmt.Fprintf(w, "Successfully uploaded file: %s", handler.Filename)
 
+}
+
+// func (h *Handler) fetchCreditScore(w http.ResponseWriter, r *http.Request) {
+// 	// w.Header().Set("Content-Type", "application/json")
+// 	// fetch the id from middleware
+// 	userId := 1
+// 	// get the credit score
+// 	var (
+// 		creditScore  int64
+// 		salary       int64
+// 		existingEMIs int64
+// 	)
+// 	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		log.Printf("db credit score scan error: %v\n", err)
+// 		return
+// 	}
+
+// 	// check for threshold score
+// 	if creditScore < minScore {
+// 		http.Error(w, "low credit score", http.StatusBadRequest)
+// 		log.Printf("cannot procede further, low credit score.")
+// 		return
+// 	}
+
+// 	// calculate pre-approved limit
+// 	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
+
+// 	// switch {
+// 	// // instant approval i.e loan < L
+// 	// case int(loan) < int(limitAmount):
+
+// 	// // document req  i.e L < loan ≤ 2L
+// 	// case int(limitAmount) < int(loan) && int(loan) < int(2*limitAmount):
+
+// 	// // reject i.e loan > 2L
+// 	// case int(loan) < int(2*limitAmount):
+
+// 	// default:
+// 	// 	fmt.Println("idk what to print")
+// 	// }
+
+// }
+
+
+func (h *Handler) fetchLimitAmount() (int, error) {
+	userId := 1
+
+	var (
+		creditScore  int64
+		salary       int64
+		existingEMIs int64
+	)
+	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
+		log.Printf("db credit score scan error: %v\n", err)
+		return -1, err
+	}
+
+	// check for threshold score
+	if creditScore < minScore {
+		log.Printf("cannot procede further, low credit score.")
+		return -1, fmt.Errorf("low credit score") 
+	}
+
+	// calculate pre-approved limit
+	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
+	return  int(limitAmount), nil
 }
 
 func ocrFile(w http.ResponseWriter, b []byte) {
@@ -361,4 +337,56 @@ func preApprovedLimit(c int64, s int64, e int64) float64 {
 	csf := float64(c / maxScore)
 	er := float64(s-e) / float64(s)
 	return float64(s*10) * csf * er
+}
+
+func connectDB() (*sql.DB, error) {
+	if err := godotenv.Load(".env"); err != nil {
+		return nil, fmt.Errorf("error loading .env file: %v", err)
+	}
+
+	cfg := mysql.NewConfig()
+	cfg.User = os.Getenv("DBUSER")
+	cfg.Passwd = os.Getenv("DBPASS")
+	cfg.Net = "tcp"
+	cfg.Addr = "127.0.0.1:3306"
+	cfg.DBName = "loandb"
+	cfg.ParseTime = true
+
+	db, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		return nil, fmt.Errorf("error opening database: %v", err)
+	}
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("error pinging database: %v", err)
+	}
+
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	fmt.Println("Connected to SQL Database!")
+	return db, nil
+}
+
+
+func main() {
+	db, err := connectDB()
+	if err != nil {
+		fmt.Printf("error in db: %v\n", err)
+		return
+	}
+	defer db.Close()
+	h := &Handler{
+		db: db,
+	}
+	// http.HandleFunc("/credit-score", h.fetchCreditScore)
+	http.HandleFunc("/loan", h.ApplyLoanHandler)
+	http.HandleFunc("/upload-salary", UploadSalarySlipHandler)
+
+	fmt.Printf("server running on port: %v\n", PORT)
+	if err := http.ListenAndServe(PORT, nil); err != nil {
+		fmt.Printf("server start error: %v", err)
+		return
+	}
 }
