@@ -17,6 +17,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	"google.golang.org/genai"
+	"github.com/jung-kurt/gofpdf"
 )
 
 var (
@@ -53,6 +54,27 @@ type Customer struct {
 	PreApprovedLimit int    `json:"preApprovedLimit"`
 }
 
+type SanctionData struct {
+    CustomerName  string
+    LoanAmount    float64
+    Tenure        int
+    // InterestRate  float64
+    EMI           float64
+    // SanctionLimit float64
+}
+
+func createSanctionData(n string, l float64, t int, e float64) *SanctionData{
+	return &SanctionData{
+		CustomerName: n,
+		LoanAmount: l,
+		Tenure: t,
+		// InterestRate: i,
+		EMI: e,
+		// SanctionLimit: sl,
+	}
+}
+
+
 var Customers = []Customer{
 	{1, "Amit Sharma", 32, "Mumbai", "Home Loan – 1800000 @ 9.2%", 782, 250000},
 	{2, "Sneha Gupta", 28, "Bengaluru", "None", 815, 300000},
@@ -69,6 +91,40 @@ var Customers = []Customer{
 type Handler struct {
 	db *sql.DB
 }
+
+func (h *Handler)GenerateSanctionLetter(w http.ResponseWriter, r *http.Request){
+	s := createSanctionData("yeshu", 500000, 5, 2000);
+	if err := GenerateSanctionPDF(*s, w); err != nil{
+		http.Error(w, err.Error(), http.StatusBadRequest);
+		return
+	}
+}
+
+func GenerateSanctionPDF(data SanctionData, w http.ResponseWriter) error {
+    pdf := gofpdf.New("P", "mm", "A4", "")
+    pdf.AddPage()
+    pdf.SetFont("Arial", "", 12)
+
+    letter := fmt.Sprintf(`
+		Dear %s,
+
+		Congratulations! Your personal loan request has been approved.
+
+		Loan Details:
+		- Loan Amount: %.2f
+		- Tenure: %d months
+		- EMI: %.2f
+
+
+		Regards,
+		Team Potato
+	`, data.CustomerName, data.LoanAmount, data.Tenure, data.EMI)
+
+    pdf.MultiCell(0, 7, letter, "", "L", false)
+
+    return pdf.Output(w)
+}
+
 
 func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
 	w.Header().Set("Content-Type", "application/json")
@@ -92,7 +148,9 @@ func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
 		http.Error(w, `{"error":"invalid duration"}`, http.StatusBadRequest)
 		return
 	}
-
+	
+	// TODO: calculate emi with intrest 
+	// 6m -> 0%, 12m -> 12.34%, 18m -> 12.67%, 24m -> 13%
 	monthlyEMI := float64(loan) / float64(duration)
 
 	limitAmount, err :=  h.fetchLimitAmount();
@@ -107,7 +165,6 @@ func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
 		MonthlyEMI:  monthlyEMI,
 		LimitAmount: limitAmount,
 	}
-
 
 	switch {
 	// instant approval i.e loan < L
@@ -183,49 +240,6 @@ func UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Successfully uploaded file: %s", handler.Filename)
 
 }
-
-// func (h *Handler) fetchCreditScore(w http.ResponseWriter, r *http.Request) {
-// 	// w.Header().Set("Content-Type", "application/json")
-// 	// fetch the id from middleware
-// 	userId := 1
-// 	// get the credit score
-// 	var (
-// 		creditScore  int64
-// 		salary       int64
-// 		existingEMIs int64
-// 	)
-// 	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
-// 		http.Error(w, err.Error(), http.StatusBadRequest)
-// 		log.Printf("db credit score scan error: %v\n", err)
-// 		return
-// 	}
-
-// 	// check for threshold score
-// 	if creditScore < minScore {
-// 		http.Error(w, "low credit score", http.StatusBadRequest)
-// 		log.Printf("cannot procede further, low credit score.")
-// 		return
-// 	}
-
-// 	// calculate pre-approved limit
-// 	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
-
-// 	// switch {
-// 	// // instant approval i.e loan < L
-// 	// case int(loan) < int(limitAmount):
-
-// 	// // document req  i.e L < loan ≤ 2L
-// 	// case int(limitAmount) < int(loan) && int(loan) < int(2*limitAmount):
-
-// 	// // reject i.e loan > 2L
-// 	// case int(loan) < int(2*limitAmount):
-
-// 	// default:
-// 	// 	fmt.Println("idk what to print")
-// 	// }
-
-// }
-
 
 func (h *Handler) fetchLimitAmount() (int, error) {
 	userId := 1
@@ -383,6 +397,7 @@ func main() {
 	// http.HandleFunc("/credit-score", h.fetchCreditScore)
 	http.HandleFunc("/loan", h.ApplyLoanHandler)
 	http.HandleFunc("/upload-salary", UploadSalarySlipHandler)
+	http.HandleFunc("/sanction-letter", h.GenerateSanctionLetter)
 
 	fmt.Printf("server running on port: %v\n", PORT)
 	if err := http.ListenAndServe(PORT, nil); err != nil {
