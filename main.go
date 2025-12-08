@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -67,7 +68,8 @@ func main() {
 	h := &Handler{
 		db: db,
 	}
-	http.HandleFunc("/credit-score", h.fetchCreditScore)
+	// http.HandleFunc("/credit-score", h.fetchCreditScore)
+	http.HandleFunc("/loan", h.loanHandler)
 	http.HandleFunc("/upload-salary", uploadSalaryDoc)
 
 	fmt.Printf("server running on port: %v\n", PORT)
@@ -107,46 +109,102 @@ func connectDB() (*sql.DB, error) {
 	return db, nil
 }
 
-func (h *Handler) fetchCreditScore(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+// func (h *Handler) fetchCreditScore(w http.ResponseWriter, r *http.Request) {
+// 	// w.Header().Set("Content-Type", "application/json")
+// 	// fetch the id from middleware
+// 	userId := 1
 
-	// fetch the id from middleware
+// 	// get the credit score
+// 	var (
+// 		creditScore  int64
+// 		salary       int64
+// 		existingEMIs int64
+// 	)
+// 	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
+// 		http.Error(w, err.Error(), http.StatusBadRequest)
+// 		log.Printf("db credit score scan error: %v\n", err)
+// 		return
+// 	}
+
+// 	// check for threshold score
+// 	if creditScore < minScore {
+// 		http.Error(w, "low credit score", http.StatusBadRequest)
+// 		log.Printf("cannot procede further, low credit score.")
+// 		return
+// 	}
+
+// 	// calculate pre-approved limit
+// 	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
+
+// 	// switch {
+// 	// // instant approval i.e loan < L
+// 	// case int(loan) < int(limitAmount):
+
+// 	// // document req  i.e L < loan ≤ 2L
+// 	// case int(limitAmount) < int(loan) && int(loan) < int(2*limitAmount):
+
+// 	// // reject i.e loan > 2L
+// 	// case int(loan) < int(2*limitAmount):
+
+// 	// default:
+// 	// 	fmt.Println("idk what to print")
+// 	// }
+
+// }
+
+func (h *Handler) fetchLimitAmount() (int, error) {
 	userId := 1
 
-	// parse & fetch loadAmout
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "failed to parse form", http.StatusBadRequest)
-		log.Printf("parse error: %v\n", err)
-		return
-	}
-	loanAmount := r.FormValue("loan_amount")
-	loan, err := strconv.Atoi(loanAmount)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-
-	// get the credit score
 	var (
 		creditScore  int64
 		salary       int64
 		existingEMIs int64
 	)
 	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
 		log.Printf("db credit score scan error: %v\n", err)
-		return
+		return -1, err
 	}
 
 	// check for threshold score
 	if creditScore < minScore {
-		http.Error(w, "low credit score", http.StatusBadRequest)
 		log.Printf("cannot procede further, low credit score.")
-		return
+		return -1, fmt.Errorf("low credit score") 
 	}
 
 	// calculate pre-approved limit
 	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
+	return  int(limitAmount), nil
+}
+
+func (h *Handler) loanHandler(w http.ResponseWriter, r *http.Request){
+	// parse & fetch loadAmout
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "failed to parse form", http.StatusBadRequest)
+		log.Printf("parse error: %v\n", err)
+		return
+	}
+	
+	loanAmount := r.FormValue("loan_amount")
+	months := r.FormValue("duration")
+	loan, err := strconv.Atoi(loanAmount)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	duration, err := strconv.Atoi(months)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
+	monthlyEMI := float64(loan / duration);
+
+	limitAmount, err :=  h.fetchLimitAmount();
+	if err != nil{
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	switch {
 	// instant approval i.e loan < L
@@ -162,12 +220,7 @@ func (h *Handler) fetchCreditScore(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("idk what to print")
 	}
 
-}
 
-func preApprovedLimit(c int64, s int64, e int64) float64 {
-	csf := float64(c / maxScore)
-	er := float64(s-e) / float64(s)
-	return float64(s*10) * csf * er
 }
 
 // TODO: mine type, only pdf required
@@ -211,15 +264,101 @@ func uploadSalaryDoc(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fmt.Fprintf(w, "Successfully uploaded file: %s: %v", handler.Filename)
+	b, err := os.ReadFile(fullPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	ocrFile(w, b)
+	fmt.Fprintf(w, "Successfully uploaded file: %s", handler.Filename)
+
 }
 
-// TODO: 
-func ocrFile(w http.ResponseWriter) {
+func ocrFile(w http.ResponseWriter, b []byte) {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	
+
+	parts := []*genai.Part{
+		{
+			InlineData: &genai.Blob{
+				MIMEType: "application/pdf",
+				Data:     b,
+			},
+		},
+		genai.NewPartFromText(`
+	You are an OCR + information extraction system.
+
+	TASK:
+	1. Read the PDF.
+	2. Extract the employee's salary if present.
+	3. Salary may appear under any of these labels:
+	- Salary
+	- Net Salary
+	- Net Pay
+	- Net Amount
+	- Gross Salary
+	- Monthly Salary
+	- Earnings Total
+	- Total Pay
+	- CTC Monthly
+	4. Extract ONLY the numeric value (₹, commas allowed).
+	5. If there is no salary-like amount, or the document is NOT a payslip/ salary document:
+		RETURN EXACTLY: WRONG_DOCS
+
+	RULES:
+	- NEVER guess.
+	- If multiple salary values exist, choose the final take-home salary / net salary.
+	- Return ONLY the value or WRONG_DOCS.
+	`),
+	}
+
+	contents := []*genai.Content{
+		genai.NewContentFromParts(parts, genai.RoleUser),
+	}
+
+	result, err := client.Models.GenerateContent(
+		ctx,
+		"gemini-2.5-flash",
+		contents,
+		nil,
+	)
+
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	text := strings.TrimSpace(result.Text())
+	upper := strings.ToUpper(text)
+
+	if upper == "WRONG_DOCS" {
+		w.Write([]byte(`{"status":"error","message":"wrong docs"}`))
+		return
+	}
+
+	// Validate salary format: VERY STRONG CHECK
+	salaryRegex := regexp.MustCompile(`(?i)(₹?\s?\d{1,3}(,\d{3})*(\.\d+)?|\d{4,})`)
+	match := salaryRegex.FindString(text)
+
+	if match == "" {
+		w.Write([]byte(`{"status":"error","message":"wrong docs"}`))
+		return
+	}
+
+	cleanedSalary := strings.TrimSpace(match)
+
+	resp := fmt.Sprintf(`{"status":"success","salary":"%s"}`, cleanedSalary)
+	w.Write([]byte(resp))
+}
+
+
+func preApprovedLimit(c int64, s int64, e int64) float64 {
+	csf := float64(c / maxScore)
+	er := float64(s-e) / float64(s)
+	return float64(s*10) * csf * er
 }
