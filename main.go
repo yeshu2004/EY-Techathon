@@ -16,24 +16,27 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
-	"google.golang.org/genai"
 	"github.com/jung-kurt/gofpdf"
+	"google.golang.org/genai"
 )
 
 var (
-	PORT     = ":4000"
-	minScore = int64(700)
-	maxScore = int64(900)
-	suffPath = "./uploads/"
+	PORT        = ":4000"
+	minScore    = int64(700)
+	maxScore    = int64(900)
+	suffPath    = "./uploads/"
+	currentUser = 12
 )
 
 type LoanStage1Response struct {
-	LoanAmount   int     `json:"loan_amount"`
-	Duration     int     `json:"duration_months"`
-	MonthlyEMI   float64 `json:"monthly_emi"`
-	LimitAmount  int     `json:"limit_amount"`
-	Status       string  `json:"status"`
-	Message      string  `json:"message"`
+	LoanId      int     `json:"loan_id"`
+	Name        string  `json:"full_name"`
+	LoanAmount  int     `json:"loan_amount"`
+	Duration    int     `json:"duration_months"`
+	MonthlyEMI  float64 `json:"monthly_emi"`
+	LimitAmount int     `json:"limit_amount"`
+	Status      string  `json:"status"`
+	Message     string  `json:"message"`
 }
 
 type Stage2Response struct {
@@ -45,67 +48,49 @@ type Stage2Response struct {
 }
 
 type Customer struct {
-	ID               int    `json:"id"`
-	Name             string `json:"name"`
-	Age              int    `json:"age"`
-	City             string `json:"city"`
-	CurrentLoan      string `json:"currentLoan"`
-	CreditScore      int    `json:"creditScore"`
-	PreApprovedLimit int    `json:"preApprovedLimit"`
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	CreditScore int    `json:"creditScore"`
+	Salary      int    `json:"salary"`
+	ExistingEmi int    `json:"existing_emi"`
 }
 
 type SanctionData struct {
-    CustomerName  string
-    LoanAmount    float64
-    Tenure        int
-    // InterestRate  float64
-    EMI           float64
-    // SanctionLimit float64
+	CustomerName string
+	LoanAmount   float64
+	Tenure       int
+	// InterestRate  float64
+	EMI float64
+	// SanctionLimit float64
 }
 
-func createSanctionData(n string, l float64, t int, e float64) *SanctionData{
+func createSanctionData(n string, l float64, t int, e float64) *SanctionData {
 	return &SanctionData{
 		CustomerName: n,
-		LoanAmount: l,
-		Tenure: t,
+		LoanAmount:   l,
+		Tenure:       t,
 		// InterestRate: i,
 		EMI: e,
 		// SanctionLimit: sl,
 	}
 }
 
-
-var Customers = []Customer{
-	{1, "Amit Sharma", 32, "Mumbai", "Home Loan – 1800000 @ 9.2%", 782, 250000},
-	{2, "Sneha Gupta", 28, "Bengaluru", "None", 815, 300000},
-	{3, "Rohan Verma", 41, "Delhi", "Car Loan – 650000 @ 10.5%", 695, 175000},
-	{4, "Priya Nair", 35, "Kochi", "Credit Card EMI – 45000", 730, 220000},
-	{5, "Kunal Mehta", 29, "Pune", "Bike Loan – 85000 @ 11.2%", 760, 150000},
-	{6, "Ankita Singh", 27, "Jaipur", "None", 840, 350000},
-	{7, "Rahul Chauhan", 45, "Lucknow", "Home Loan – 2200000 @ 8.9%", 702, 200000},
-	{8, "Shivani Deshpande", 33, "Nagpur", "Personal Loan – 120000 @ 13%", 665, 100000},
-	{9, "Deepak Soni", 38, "Indore", "Car Loan – 520000 @ 10%", 720, 180000},
-	{10, "Megha Trivedi", 30, "Ahmedabad", "None", 799, 275000},
-}
-
 type Handler struct {
 	db *sql.DB
 }
 
-func (h *Handler)GenerateSanctionLetter(w http.ResponseWriter, r *http.Request){
-	s := createSanctionData("yeshu", 500000, 5, 2000);
-	if err := GenerateSanctionPDF(*s, w); err != nil{
-		http.Error(w, err.Error(), http.StatusBadRequest);
-		return
-	}
+func GenerateSanctionLetter(w http.ResponseWriter, resp *LoanStage1Response) error {
+	s := createSanctionData(resp.Name, float64(resp.LoanAmount), resp.Duration, resp.MonthlyEMI)
+	return GenerateSanctionPDF(*s, w)
 }
 
 func GenerateSanctionPDF(data SanctionData, w http.ResponseWriter) error {
-    pdf := gofpdf.New("P", "mm", "A4", "")
-    pdf.AddPage()
-    pdf.SetFont("Arial", "", 12)
+	w.Header().Set("Content-Disposition", "attachment; filename=\"sanction_letter.pdf\"")
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+	pdf.SetFont("Arial", "", 12)
 
-    letter := fmt.Sprintf(`
+	letter := fmt.Sprintf(`
 		Dear %s,
 
 		Congratulations! Your personal loan request has been approved.
@@ -120,21 +105,15 @@ func GenerateSanctionPDF(data SanctionData, w http.ResponseWriter) error {
 		Team Potato
 	`, data.CustomerName, data.LoanAmount, data.Tenure, data.EMI)
 
-    pdf.MultiCell(0, 7, letter, "", "L", false)
+	pdf.MultiCell(0, 7, letter, "", "L", false)
 
-    return pdf.Output(w)
+	return pdf.Output(w)
 }
 
+func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request) {
+	userId := currentUser // TODO: has to be dynamic, using middleware (auth)
 
-func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
-	w.Header().Set("Content-Type", "application/json")
-
-	// parse & fetch loadAmout
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, `{"error":"failed to parse form"}`, http.StatusBadRequest)
-		return
-	}
-	
+	// fetch from frotnend i.e forms
 	loanAmount := r.FormValue("loan_amount")
 	months := r.FormValue("duration")
 	loan, err := strconv.Atoi(loanAmount)
@@ -148,18 +127,42 @@ func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
 		http.Error(w, `{"error":"invalid duration"}`, http.StatusBadRequest)
 		return
 	}
-	
-	// TODO: calculate emi with intrest 
+
+	var (
+		name         string
+		credit_score int
+		salary       int
+		existing_emi int
+	)
+
+	// fetch customer deatils i.e name, salary, credit score, existing EMI's.
+	query := "SELECT full_name, credit_score, salary, existing_emi FROM users WHERE id = ?"
+	if err := h.db.QueryRow(query, userId).Scan(&name, &credit_score, &salary, &existing_emi); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	user := Customer{
+		ID:          userId,
+		Name:        name,
+		CreditScore: credit_score,
+		Salary:      salary,
+		ExistingEmi: existing_emi,
+	}
+
+	// TODO: calculate emi with intrest
 	// 6m -> 0%, 12m -> 12.34%, 18m -> 12.67%, 24m -> 13%
 	monthlyEMI := float64(loan) / float64(duration)
 
-	limitAmount, err :=  h.fetchLimitAmount();
+	limitAmount, err := h.fetchLimitAmount(&user)
+	fmt.Println(limitAmount)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 
 	resp := LoanStage1Response{
+		Name:        user.Name,
 		LoanAmount:  loan,
 		Duration:    duration,
 		MonthlyEMI:  monthlyEMI,
@@ -171,35 +174,89 @@ func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request){
 	case int(loan) < int(limitAmount):
 		resp.Status = "approved"
 		resp.Message = "instant approval granted"
+		n, err := writeLoanToDB(h.db, &resp, userId)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp.LoanId = int(n)
+		if err := GenerateSanctionLetter(w, &resp); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 	// document req  i.e L < loan ≤ 2L
 	case int(limitAmount) < int(loan) && int(loan) < int(2*limitAmount):
-		resp.Status = "salary slip needed"
+		w.Header().Set("Content-Type", "application/json")
+		resp.Status = "salary_verification"
 		resp.Message = "please upload salary slip for further verification"
+		n, err := writeLoanToDB(h.db, &resp, userId)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp.LoanId = int(n)
+		json.NewEncoder(w).Encode(resp)
+		return
 	// reject i.e loan > 2L
 	case int(loan) > int(2*limitAmount):
+		w.Header().Set("Content-Type", "application/json")
 		resp.Status = "rejected"
 		resp.Message = "requested loan exceeds maximum eligibility"
+		n, err := writeLoanToDB(h.db, &resp, userId)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp.LoanId = int(n)
+		json.NewEncoder(w).Encode(resp)
+		return
 	default:
-		resp.Status = "unkown"
+		w.Header().Set("Content-Type", "application/json")
+		resp.Status = "rejected"
 		resp.Message = "unable to determine eligibility."
+		n, err := writeLoanToDB(h.db, &resp, userId)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		resp.LoanId = int(n)
+		json.NewEncoder(w).Encode(resp)
 	}
+}
 
-	json.NewEncoder(w).Encode(resp)
+// TODO: transaction db calls
+func writeLoanToDB(db *sql.DB, resp *LoanStage1Response, userId int) (int64, error) {
+	query := "INSERT INTO loans (user_id, amount, months, monthly_emi, status, limit_amount) VALUES (?,?,?,?,?,?)"
+	r, err := db.Exec(query, userId, resp.LoanAmount, resp.Duration, resp.MonthlyEMI, resp.Status, resp.LimitAmount)
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
 }
 
 // TODO: mine type, only pdf required
-func UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	
+
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	userId := currentUser
+
 	// Parse multipart form data, limit to 10MB
 	err := r.ParseMultipartForm(10 << 20)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	//get unique loan ID
+	i := r.FormValue("loan_id")
+	loanID, err := strconv.Atoi(i)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 
@@ -212,65 +269,138 @@ func UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	if err := os.MkdirAll(suffPath, os.ModePerm); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
 	}
 
 	fullPath := suffPath + strings.Join(strings.Split(handler.Filename, " "), "")
 	dst, err := os.Create(fullPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	defer dst.Close()
 
 	// Copy the uploaded file content to the new file
 	if _, err := io.Copy(dst, file); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
 	b, err := os.ReadFile(fullPath)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 
-	ocrFile(w, b)
-	fmt.Fprintf(w, "Successfully uploaded file: %s", handler.Filename)
-
-}
-
-func (h *Handler) fetchLimitAmount() (int, error) {
-	userId := 1
+	ssalary := ocrFile(w, b)
+	slipSalary, err := strconv.Atoi(ssalary)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("SalarySlip Salary: %v\n", slipSalary)
 
 	var (
-		creditScore  int64
-		salary       int64
-		existingEMIs int64
+		name        string
+		salary      int
+		existingEmi float64
+		loanAmount  float64
+		months      int
+		monthlyEmi  float64
+		status      string
+		limitAmount float64
 	)
-	if err := h.db.QueryRow("SELECT credit_score, monthly_income, existing_emi FROM USER WHERE id = ?", userId).Scan(&creditScore, &salary, &existingEMIs); err != nil {
-		log.Printf("db credit score scan error: %v\n", err)
-		return -1, err
+
+	// fetch salary from users
+	if err := h.db.QueryRow("SELECT full_name, salary, existing_emi FROM users WHERE id = ?", userId).Scan(&name, &salary, &existingEmi); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
 	}
 
+	// fetch loan details from loans
+	query := "SELECT amount, months, monthly_emi, status, limit_amount FROM loans WHERE loan_id = ?"
+	if err := h.db.QueryRow(query, loanID).Scan(&loanAmount, &months, &monthlyEmi, &status, &limitAmount); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+
+	if status == "rejected" {
+		http.Error(w, `{"error":'loan with this loanID is already is rejected.'}`, http.StatusBadRequest)
+		return
+	}
+	if status != "salary_verification" {
+		http.Error(w, `{"error":'wrong status'}`, http.StatusBadRequest)
+		return
+	}
+
+	if slipSalary != salary {
+		http.Error(w, `{"error":'salary slip salary doesn't matches your profile salary, please update profile salary and then retry for loan.'}`, http.StatusBadRequest)
+		return
+	}
+
+	resp := LoanStage1Response{
+		LoanId:      loanID,
+		Name:        name,
+		LoanAmount:  int(loanAmount),
+		Duration:    months,
+		MonthlyEMI:  monthlyEmi,
+		LimitAmount: int(limitAmount),
+	}
+
+	available := float64(salary) - existingEmi
+	maxAllowedNewEmi := available / 2
+	check := monthlyEmi <= maxAllowedNewEmi
+
+	fmt.Println(check)
+	//condition check
+	if check {
+		resp.Status = "approved"
+		resp.Message = "instant approval granted"
+		// update db salary_verification -> approved
+		query := `UPDATE loans SET status = ? WHERE loan_id = ?`
+		_, err := h.db.Exec(query, resp.Status, loanID)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		if err := GenerateSanctionLetter(w, &resp); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		return
+	}
+
+	resp.Status = "rejected"
+	resp.Message = "requested loan exceeds maximum eligibility"
+
+	query = `UPDATE loans SET status = ? WHERE loan_id = ?`
+	_, err = h.db.Exec(query, resp.Status, loanID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+		return
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+func (h *Handler) fetchLimitAmount(user *Customer) (int, error) {
 	// check for threshold score
-	if creditScore < minScore {
+	if int64(user.CreditScore) < minScore {
 		log.Printf("cannot procede further, low credit score.")
-		return -1, fmt.Errorf("low credit score") 
+		return -1, fmt.Errorf("low credit score")
 	}
 
 	// calculate pre-approved limit
-	limitAmount := preApprovedLimit(creditScore, salary, existingEMIs)
-	return  int(limitAmount), nil
+	limitAmount := preApprovedLimit(int64(user.CreditScore), int64(user.Salary), int64(user.ExistingEmi))
+	return int(limitAmount), nil
 }
 
-func ocrFile(w http.ResponseWriter, b []byte) {
+func ocrFile(w http.ResponseWriter, b []byte) string {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return ""
 	}
 
 	parts := []*genai.Part{
@@ -320,7 +450,7 @@ func ocrFile(w http.ResponseWriter, b []byte) {
 
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return ""
 	}
 
 	text := strings.TrimSpace(result.Text())
@@ -328,7 +458,7 @@ func ocrFile(w http.ResponseWriter, b []byte) {
 
 	if upper == "WRONG_DOCS" {
 		w.Write([]byte(`{"status":"error","message":"wrong docs"}`))
-		return
+		return ""
 	}
 
 	// Validate salary format: VERY STRONG CHECK
@@ -337,18 +467,18 @@ func ocrFile(w http.ResponseWriter, b []byte) {
 
 	if match == "" {
 		w.Write([]byte(`{"status":"error","message":"wrong docs"}`))
-		return
+		return ""
 	}
 
-	cleanedSalary := strings.TrimSpace(match)
+	cleanedSalary := strings.Join(strings.Split(strings.TrimSpace(match), ","), "")
 
-	resp := fmt.Sprintf(`{"status":"success","salary":"%s"}`, cleanedSalary)
-	w.Write([]byte(resp))
+	// resp := fmt.Sprintf(`{"status":"success","salary":"%s"}`, cleanedSalary)
+	// w.Write([]byte(resp))
+	return cleanedSalary
 }
 
-
-func preApprovedLimit(c int64, s int64, e int64) float64 {
-	csf := float64(c / maxScore)
+func preApprovedLimit(cs int64, s int64, e int64) float64 {
+	csf := float64(cs) / float64(maxScore)
 	er := float64(s-e) / float64(s)
 	return float64(s*10) * csf * er
 }
@@ -383,7 +513,6 @@ func connectDB() (*sql.DB, error) {
 	return db, nil
 }
 
-
 func main() {
 	db, err := connectDB()
 	if err != nil {
@@ -396,8 +525,8 @@ func main() {
 	}
 	// http.HandleFunc("/credit-score", h.fetchCreditScore)
 	http.HandleFunc("/loan", h.ApplyLoanHandler)
-	http.HandleFunc("/upload-salary", UploadSalarySlipHandler)
-	http.HandleFunc("/sanction-letter", h.GenerateSanctionLetter)
+	http.HandleFunc("/upload-salary", h.UploadSalarySlipHandler)
+	// http.HandleFunc("/sanction-letter", h.GenerateSanctionLetter)
 
 	fmt.Printf("server running on port: %v\n", PORT)
 	if err := http.ListenAndServe(PORT, nil); err != nil {
