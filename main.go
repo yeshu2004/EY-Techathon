@@ -25,7 +25,7 @@ var (
 	minScore    = int64(700)
 	maxScore    = int64(900)
 	suffPath    = "./uploads/"
-	currentUser = 12
+	currentUser = 12 // change this unitl we have auth done.
 )
 
 type LoanStage1Response struct {
@@ -37,14 +37,6 @@ type LoanStage1Response struct {
 	LimitAmount int     `json:"limit_amount"`
 	Status      string  `json:"status"`
 	Message     string  `json:"message"`
-}
-
-type Stage2Response struct {
-	LoanAmount int     `json:"loan_amount"`
-	MonthlyEMI float64 `json:"monthly_emi"`
-	Salary     int     `json:"salary"`
-	Status     string  `json:"status"`
-	Message    string  `json:"message"`
 }
 
 type Customer struct {
@@ -62,17 +54,6 @@ type SanctionData struct {
 	// InterestRate  float64
 	EMI float64
 	// SanctionLimit float64
-}
-
-func createSanctionData(n string, l float64, t int, e float64) *SanctionData {
-	return &SanctionData{
-		CustomerName: n,
-		LoanAmount:   l,
-		Tenure:       t,
-		// InterestRate: i,
-		EMI: e,
-		// SanctionLimit: sl,
-	}
 }
 
 type Handler struct {
@@ -224,16 +205,6 @@ func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// TODO: transaction db calls
-func writeLoanToDB(db *sql.DB, resp *LoanStage1Response, userId int) (int64, error) {
-	query := "INSERT INTO loans (user_id, amount, months, monthly_emi, status, limit_amount) VALUES (?,?,?,?,?,?)"
-	r, err := db.Exec(query, userId, resp.LoanAmount, resp.Duration, resp.MonthlyEMI, resp.Status, resp.LimitAmount)
-	if err != nil {
-		return 0, err
-	}
-	return r.LastInsertId()
-}
-
 // TODO: mine type, only pdf required
 func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -293,7 +264,7 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	ssalary := ocrFile(w, b)
+	ssalary := ocrFile(w, b) // helper function
 	slipSalary, err := strconv.Atoi(ssalary)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -312,7 +283,7 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 		limitAmount float64
 	)
 
-	// fetch salary from users
+	// fetch user name, salary, existingEMI from users
 	if err := h.db.QueryRow("SELECT full_name, salary, existing_emi FROM users WHERE id = ?", userId).Scan(&name, &salary, &existingEmi); err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 		return
@@ -348,12 +319,13 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 		LimitAmount: int(limitAmount),
 	}
 
+	// maths
 	available := float64(salary) - existingEmi
 	maxAllowedNewEmi := available / 2
 	check := monthlyEmi <= maxAllowedNewEmi
 
 	fmt.Println(check)
-	//condition check
+	//condition check, if true  
 	if check {
 		resp.Status = "approved"
 		resp.Message = "instant approval granted"
@@ -371,6 +343,7 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// else (rejected i.e check-> false)
 	resp.Status = "rejected"
 	resp.Message = "requested loan exceeds maximum eligibility"
 
@@ -383,6 +356,28 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(resp)
 }
 
+// TODO: transaction db calls
+func writeLoanToDB(db *sql.DB, resp *LoanStage1Response, userId int) (int64, error) {
+	query := "INSERT INTO loans (user_id, amount, months, monthly_emi, status, limit_amount) VALUES (?,?,?,?,?,?)"
+	r, err := db.Exec(query, userId, resp.LoanAmount, resp.Duration, resp.MonthlyEMI, resp.Status, resp.LimitAmount)
+	if err != nil {
+		return 0, err
+	}
+	return r.LastInsertId()
+}
+
+func createSanctionData(n string, l float64, t int, e float64) *SanctionData {
+	return &SanctionData{
+		CustomerName: n,
+		LoanAmount:   l,
+		Tenure:       t,
+		// InterestRate: i,
+		EMI: e,
+		// SanctionLimit: sl,
+	}
+}
+
+// function that returns Pre Approved Limit
 func (h *Handler) fetchLimitAmount(user *Customer) (int, error) {
 	// check for threshold score
 	if int64(user.CreditScore) < minScore {
@@ -395,6 +390,7 @@ func (h *Handler) fetchLimitAmount(user *Customer) (int, error) {
 	return int(limitAmount), nil
 }
 
+// gemini ocr api which returns the salary from salary slip.
 func ocrFile(w http.ResponseWriter, b []byte) string {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, nil)
@@ -471,9 +467,6 @@ func ocrFile(w http.ResponseWriter, b []byte) string {
 	}
 
 	cleanedSalary := strings.Join(strings.Split(strings.TrimSpace(match), ","), "")
-
-	// resp := fmt.Sprintf(`{"status":"success","salary":"%s"}`, cleanedSalary)
-	// w.Write([]byte(resp))
 	return cleanedSalary
 }
 
