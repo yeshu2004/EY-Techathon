@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -14,18 +15,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	"github.com/jung-kurt/gofpdf"
 	"google.golang.org/genai"
+
+	aws "github.com/yeshu2004/go-loan/aws"
 )
 
 var (
-	PORT        = ":4000"
-	minScore    = int64(700)
-	maxScore    = int64(900)
-	suffPath    = "./uploads/"
-	currentUser = 12 // change this unitl we have auth done.
+	PORT               = ":4000"
+	minScore           = int64(700)
+	maxScore           = int64(900)
+	suffPath           = "./uploads/"
+	currentUser        = 11 // change this unitl we have auth done.
+	sanctionBucketName = "potato-bucket"
 )
 
 type LoanStage1Response struct {
@@ -57,16 +63,17 @@ type SanctionData struct {
 }
 
 type Handler struct {
-	db *sql.DB
+	db       *sql.DB
+	s3Bucket aws.BucketBasics
 }
 
-func GenerateSanctionLetter(w http.ResponseWriter, resp *LoanStage1Response) error {
+func (h *Handler) GenerateSanctionLetter(w http.ResponseWriter, resp *LoanStage1Response) error {
 	s := createSanctionData(resp.Name, float64(resp.LoanAmount), resp.Duration, resp.MonthlyEMI)
-	return GenerateSanctionPDF(*s, w)
+	return h.GenerateSanctionPDF(*s, w)
 }
 
-func GenerateSanctionPDF(data SanctionData, w http.ResponseWriter) error {
-	w.Header().Set("Content-Disposition", "attachment; filename=\"sanction_letter.pdf\"")
+func (h *Handler) GenerateSanctionPDF(data SanctionData, w http.ResponseWriter) error {
+	// create letter
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.AddPage()
 	pdf.SetFont("Arial", "", 12)
@@ -88,7 +95,44 @@ func GenerateSanctionPDF(data SanctionData, w http.ResponseWriter) error {
 
 	pdf.MultiCell(0, 7, letter, "", "L", false)
 
-	return pdf.Output(w)
+	buf := &bytes.Buffer{}
+	if err := pdf.Output(buf); err != nil {
+		return fmt.Errorf("failed to generate pdf: %w", err)
+	}
+
+	// upload to s3 bucket
+	ctx := context.Background()
+	k, err :=  h.UploadPDFToS3(ctx, data.CustomerName, buf);
+	if err !=nil{
+		return fmt.Errorf("s3 upload failed: %w", err)
+	}
+
+	// TODO: upload s3 bucket key in db
+
+	w.Header().Set("Content-Type", "application/pdf")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, "sanction_letter.pdf"))
+
+	if _, err := w.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("failed to write pdf to response: %w", err)
+	}
+	return nil
+}
+
+func (h *Handler) UploadPDFToS3(ctx context.Context, name string, body io.Reader) (string, error) {
+	bucketName := os.Getenv("SANCTION_BUCKET")
+	if bucketName == "" {
+		bucketName = sanctionBucketName
+	}
+
+	key := getObjectKey(name) // helper funtion 
+	if err := h.s3Bucket.UploadFile(ctx, bucketName, key, body); err != nil {
+		return "", err
+	}
+	return key, nil;
+}
+
+func getObjectKey(name string) string {
+	return fmt.Sprintf("sanctions/%s_%d.pdf", strings.ReplaceAll(strings.ToLower(name), " ", "_"), time.Now().Unix())
 }
 
 func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +205,7 @@ func (h *Handler) ApplyLoanHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp.LoanId = int(n)
-		if err := GenerateSanctionLetter(w, &resp); err != nil {
+		if err := h.GenerateSanctionLetter(w, &resp); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -325,7 +369,7 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 	check := monthlyEmi <= maxAllowedNewEmi
 
 	fmt.Println(check)
-	//condition check, if true  
+	//condition check, if true
 	if check {
 		resp.Status = "approved"
 		resp.Message = "instant approval granted"
@@ -336,7 +380,7 @@ func (h *Handler) UploadSalarySlipHandler(w http.ResponseWriter, r *http.Request
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
 			return
 		}
-		if err := GenerateSanctionLetter(w, &resp); err != nil {
+		if err := h.GenerateSanctionLetter(w, &resp); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -513,9 +557,18 @@ func main() {
 		return
 	}
 	defer db.Close()
-	h := &Handler{
-		db: db,
+
+	cfg, err := config.LoadDefaultConfig(context.Background())
+	if err != nil {
+		panic(err)
 	}
+
+	s3Client := s3.NewFromConfig(cfg)
+	h := &Handler{
+		db:       db,
+		s3Bucket: aws.BucketBasics{S3Client: s3Client},
+	}
+
 	// http.HandleFunc("/credit-score", h.fetchCreditScore)
 	http.HandleFunc("/loan", h.ApplyLoanHandler)
 	http.HandleFunc("/upload-salary", h.UploadSalarySlipHandler)
